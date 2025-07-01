@@ -77,7 +77,7 @@ File logFile;
 
 // ADC sensores suelo
 Adafruit_ADS1115 ads;
-#define TOLERANCIA_ADC 100
+#define TOLERANCIA_ADC 120
 
 // Pines RS485
 #define RS485_DE_RE 27 
@@ -249,7 +249,9 @@ void setup() {
         if (config.usar_sim800) {
           SerialBT.println("🕒 ¿Deseas sincronizar la hora desde internet? (S/N) [RECOMENDADO]");
           SerialBT.println("🕒 Esperando respuesta...");
-
+          
+          while (SerialBT.available()) SerialBT.read();
+          delay(200);
           bool respuestaSyncValida = false;
           while (!respuestaSyncValida) {
             if (SerialBT.available()) {
