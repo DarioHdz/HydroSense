@@ -136,6 +136,8 @@ void setup() {
   delay(5000);
 
   pinMode(PIN_BLUETOOTH_ACTIVADOR, INPUT_PULLUP);
+  pinMode(POWER_CTRL_PIN, OUTPUT);
+  pinMode(MODEM_PWR, OUTPUT);
   pinMode(LED_VERDE, OUTPUT);
   pinMode(LED_ROJO, OUTPUT);
   digitalWrite(LED_VERDE, LOW);
@@ -182,7 +184,6 @@ void setup() {
 
   // Enciende micro SD, ADS1115 y MAX485
   debugPrint("🔌 Encendiendo módulos (micro SD, ADS1115, MAX485) ...");
-  pinMode(POWER_CTRL_PIN, OUTPUT);
   digitalWrite(POWER_CTRL_PIN, HIGH); 
   delay(500);
   parpadearLed(LED_VERDE, 3, true);
@@ -252,7 +253,6 @@ void setup() {
 
   // Iniciar SIM800L
   debugPrint("📶 Encendiendo SIM800L...");
-  pinMode(MODEM_PWR, OUTPUT);
   digitalWrite(MODEM_PWR, HIGH);
   delay(2000);
   parpadearLed(LED_VERDE, 3, true);
