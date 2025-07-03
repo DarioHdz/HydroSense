@@ -78,7 +78,7 @@ File logFile;
 
 // ADC sensores suelo
 Adafruit_ADS1115 ads;
-#define TOLERANCIA_ADC 120
+#define TOLERANCIA_ADC 250
 
 // Pines RS485
 #define RS485_DE_RE 27 
@@ -109,7 +109,7 @@ bool bluetoothActivo = false;
 BluetoothSerial SerialBT;
 
 // Variables para control del sistema
-#define FIRMWARE_VERSION "v2.3"
+#define FIRMWARE_VERSION "v2.4"
 enum EstadoSistema {
   ESTADO_OK,
   FALLO_CRITICO,
@@ -522,6 +522,98 @@ void setup() {
           }
           delay(100);
         }
+
+        // Preguntar si desea editar los datos de la API
+        SerialBT.println("🌐 ¿Deseas editar los datos de la API? (S/N)");
+        bool respuestaApiValida = false;
+
+        while (SerialBT.available()) SerialBT.read();
+        delay(200);
+
+        while (!respuestaApiValida) {
+          if (SerialBT.available()) {
+            char r = toupper(SerialBT.read());
+            if (r == 'S') {
+              // Leer archivo
+              File configFile = SD.open("/config.json", FILE_READ);
+              if (!configFile) {
+                SerialBT.println("❌ Error al abrir config.json.");
+                return;
+              }
+              JsonDocument doc;
+              DeserializationError error = deserializeJson(doc, configFile);
+              configFile.close();
+
+              if (error) {
+                SerialBT.println("❌ Error al parsear JSON.");
+                return;
+              }
+
+              // Host
+              SerialBT.println("✏️ Ingresa el nuevo HOST (ej: api.midominio.com):");
+              String nuevoHost = "";
+              while (true) {
+                if (SerialBT.available()) {
+                  char c = SerialBT.read();
+                  if (c == '\n' || c == '\r') break;
+                  if (isPrintable(c)) nuevoHost += c;
+                }
+                delay(10);
+              }
+              nuevoHost.trim();
+              doc["api_host"] = nuevoHost;
+
+              // Puerto
+              SerialBT.println("✏️ Ingresa el nuevo PUERTO (ej: 80):");
+              String puertoStr = "";
+              while (true) {
+                if (SerialBT.available()) {
+                  char c = SerialBT.read();
+                  if (c == '\n' || c == '\r') break;
+                  if (isDigit(c)) puertoStr += c;
+                }
+                delay(10);
+              }
+              doc["api_puerto"] = puertoStr.toInt();
+
+              // Endpoint
+              SerialBT.println("✏️ Ingresa el nuevo ENDPOINT (ej: /api/registro):");
+              String nuevoEndpoint = "";
+              while (true) {
+                if (SerialBT.available()) {
+                  char c = SerialBT.read();
+                  if (c == '\n' || c == '\r') break;
+                  if (isPrintable(c)) nuevoEndpoint += c;
+                }
+                delay(10);
+              }
+              nuevoEndpoint.trim();
+              doc["api_endpoint"] = nuevoEndpoint;
+
+              // Guardar archivo
+              SD.remove("/config.json");
+              configFile = SD.open("/config.json", FILE_WRITE);
+              if (!configFile) {
+                SerialBT.println("❌ No se pudo guardar nuevo archivo.");
+                return;
+              }
+              serializeJsonPretty(doc, configFile);
+              configFile.close();
+
+              SerialBT.println("✅ Datos de API actualizados.");
+              respuestaApiValida = true;
+
+            } else if (r == 'N') {
+              SerialBT.println("⏭️ Datos de API no modificados.");
+              respuestaApiValida = true;
+
+            } else {
+              SerialBT.println("❓ Respuesta no válida. Usa 'S' o 'N'.");
+            }
+          }
+          delay(100);
+        }
+
 
         break;
       } else {
