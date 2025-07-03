@@ -145,6 +145,7 @@ ConfiguracionSistema config;
 
 // Prototipos
 void actualizarEstado(EstadoSistema estado, const String& id = "", const String& descripcion = "");
+int leerPromedioADC(uint8_t canal, uint8_t muestras = 5,uint16_t intervaloMs = 50, bool debugBT = false);
 void parpadearLed(uint8_t pinLed, uint8_t cantidad, bool largo);
 int calcularPorcentajeHumedad(int valor, int seco, int mojado);
 void enviarDatosAPI(const String &lineaCSV);
@@ -153,7 +154,6 @@ void debugPrint(const String& mensaje);
 bool enviarSMS(const String& mensaje);
 void guardarEnSD(const String& linea);
 bool sincronizarHoraDesdeInternet();
-int leerPromedioADC(uint8_t canal, uint8_t muestras = 5,uint16_t intervaloMs = 50, bool debugBT = false);
 void calibrarSensoresSuelo();
 bool cargarConfiguracion();
 int leerRadiacionModbus();
