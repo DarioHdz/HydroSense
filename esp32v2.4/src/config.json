@@ -1,0 +1,23 @@
+{
+  "nombre_equipo": "ESP32_NODE_01",
+  "numSerie": "CDHS001",
+  "sueloS30_min": 9004,
+  "sueloS30_max": 9002,
+  "sueloS15_min": 10434,
+  "sueloS15_max": 10431,
+  "intervalo_minutos": 2,
+  "apn": "internet.itelcel.com",
+  "usuario_apn": "webgprs",
+  "contrasena_apn": "webgprs2002",
+  "numero_SMS": "+524427547302",
+  "usar_modbus": true,
+  "usar_sim800": true,
+  "timeout_red": 20000,
+  "usar_leds_estado": true,
+  "archivo_log": "log.csv",
+  "reintentos_envio_sms": 3,
+  "espera_entre_reintentos_sms_ms": 500,
+  "api_host": "miapi.ejemplo.com",
+  "api_puerto": 80,
+  "api_endpoint": "/api/registro"
+}
