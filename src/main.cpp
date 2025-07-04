@@ -121,47 +121,68 @@ RTC_DATA_ATTR EstadoSistema ultimoEstado = ESTADO_OK;
 
 // Configuracion del sistema
 struct ConfiguracionSistema {
-  String nombre_equipo;
-  uint16_t sueloS30_min;
-  uint16_t sueloS30_max;
-  uint16_t sueloS15_min;
-  uint16_t sueloS15_max;
-  uint16_t intervalo_minutos;
-  String apn;
-  String usuario_apn;
-  String contrasena_apn;
-  String numero_SMS;
+  char nombre_equipo[32];
+  char numSerie[16];  // ❌ No editable por Bluetooth
+  int sueloS30_min;
+  int sueloS30_max;
+  int sueloS15_min;
+  int sueloS15_max;
+  int intervalo_minutos;
+  char apn[64];
+  char usuario_apn[32];
+  char contrasena_apn[32];
+  char numero_SMS[20];
   bool usar_modbus;
   bool usar_sim800;
+  bool usar_leds_estado;
+
   uint16_t timeout_red;
-  String archivo_log;
-  uint8_t reintentos_envio_sms;
-  uint16_t espera_entre_reintentos_sms_ms;
-  String api_host;
-  uint16_t api_puerto;
-  String api_endpoint;
+
+  char archivo_log[32];
+
+  int reintentos_envio_sms;
+  int espera_entre_reintentos_sms_ms;
+
+  char api_host[64];
+  char api_endpoint[64];
+  int api_puerto;
 };
 ConfiguracionSistema config;
 
 // Prototipos
-void actualizarEstado(EstadoSistema estado, const String& id = "", const String& descripcion = "");
 int leerPromedioADC(uint8_t canal, uint8_t muestras = 5,uint16_t intervaloMs = 50, bool debugBT = false);
+void actualizarEstado(EstadoSistema estado, const String& id = "", const String& descripcion = "");
+void editarCampoConfig(const char* nombreCampo, char* destino, size_t maxLen);
+void editarCampoNumConfig(const char* nombreCampo, int* destino);
 void parpadearLed(uint8_t pinLed, uint8_t cantidad, bool largo);
 int calcularPorcentajeHumedad(int valor, int seco, int mojado);
-void enviarDatosAPI(const String &lineaCSV);
+void alternarCampoBool(const char* nombreCampo, bool* destino);
+bool enviarDatosAPI(const String &lineaCSV);
 String fechaActual(const DateTime& dt);
 void debugPrint(const String& mensaje);
 bool enviarSMS(const String& mensaje);
 void guardarEnSD(const String& linea);
+void configuracionRapidaDespliegue();
 bool sincronizarHoraDesdeInternet();
+void mostrarConfiguracionActual();
+void menuCalibracionSensores();
+
+bool guardarConfigEnArchivo();
 void calibrarSensoresSuelo();
+void menuBluetoothGeneral();
+String leerLineaBluetooth();
+void editarConfiguracion();
 bool cargarConfiguracion();
 int leerRadiacionModbus();
+int leerEnteroBluetooth();
 bool verificarModbus();
+void probarEnvioAPI();
+void probarEnvioSMS();
 bool iniciarSIM800L();
 bool iniciarADS1115();
 bool iniciarModbus();
 bool conectarGPRS();
+void menuPruebas();
 bool iniciarRTC();
 bool iniciarSD();
 
@@ -224,394 +245,7 @@ void setup() {
         SerialBT.println("✅ Conexion establecida con ESP32");
         SerialBT.println("🔧 Bluetooth listo para depuracion");
 
-        // Preguntar por calibracion
-        SerialBT.println("¿Deseas calibrar sensores de suelo? (S/N) [RECOMENDADO]");
-        SerialBT.println("⌛ Esperando respuesta...");
-
-        bool respuestaValida = false;
-        while (!respuestaValida) {
-          if (SerialBT.available()) {
-            char r = toupper(SerialBT.read());
-            if (r == 'S') {
-              calibrarSensoresSuelo();
-              respuestaValida = true;
-            } else if (r == 'N') {
-              SerialBT.println("⏭️ Calibracion omitida.");
-              respuestaValida = true;
-            } else {
-              SerialBT.println("❓ Respuesta no valida. Usa 'S' o 'N'.");
-            }
-          }
-          delay(100);
-        }
-
-        // Preguntar por sincronizacion de hora
-        if (config.usar_sim800) {
-          SerialBT.println("🕒 ¿Deseas sincronizar la hora desde internet? (S/N) [RECOMENDADO]");
-          SerialBT.println("🕒 Esperando respuesta...");
-
-          while (SerialBT.available()) SerialBT.read();
-          delay(200);
-          bool respuestaSyncValida = false;
-          while (!respuestaSyncValida) {
-            if (SerialBT.available()) {
-              char r = toupper(SerialBT.read());
-
-              if (r == 'S') {
-                // Asegurarse que el RTC este inicializado
-                if (!rtcInicializado) {
-                  if (!iniciarRTC()) {
-                    SerialBT.println("❌ No se pudo iniciar el RTC. Cancelando sincronizacion.");
-                    break;
-                  }
-                  rtcInicializado = true;
-                }
-
-                // Asegurarse que el SIM800L este encendido (si no lo esta ya)
-                if (!sim800Inicializado) {
-                  if (!iniciarSIM800L()) {
-                    SerialBT.println("❌ No se pudo iniciar el SIM800L. Cancelando sincronizacion.");
-                    break;
-                  }
-                  sim800Inicializado = true;
-                }
-
-                SerialBT.println("🌐 Iniciando sincronizacion de hora...");
-                if (!sincronizarHoraDesdeInternet()) {
-                  SerialBT.println("❌ Error al sincronizar hora.");
-                }
-                respuestaSyncValida = true;
-
-              } else if (r == 'N') {
-                SerialBT.println("⏭️ Sincronizacion omitida.");
-                respuestaSyncValida = true;
-
-              } else {
-                SerialBT.println("❓ Respuesta no valida. Usa 'S' o 'N'.");
-              }
-            }
-            delay(100);
-          }
-        }
-
-        // Preguntar si desea editar el intervalo de sleep
-        SerialBT.println("🕒 ¿Deseas editar el intervalo de sleep en minutos? (S/N)");
-        bool respuestaIntervaloValida = false;
-
-        while (SerialBT.available()) SerialBT.read();
-        delay(200);
-
-        while (!respuestaIntervaloValida) {
-          if (SerialBT.available()) {
-            char r = toupper(SerialBT.read());
-            if (r == 'S') {
-              bool valorValido = false;
-              while (!valorValido) {
-                SerialBT.println("✏️ Ingresa el nuevo valor (en minutos, entre 2 y 1440):");
-
-                while (SerialBT.available()) SerialBT.read();  // limpiar buffer
-                delay(200);
-
-                String valorStr = "";
-                while (true) {
-                  if (SerialBT.available()) {
-                    char c = SerialBT.read();
-                    if (c == '\n' || c == '\r') break;
-                    if (isDigit(c)) valorStr += c;
-                  }
-                  delay(10);
-                }
-
-                uint16_t nuevoIntervalo = valorStr.toInt();
-                if (nuevoIntervalo >= 2 && nuevoIntervalo <= 1440) {
-                  config.intervalo_minutos = nuevoIntervalo;
-
-                  File configFile = SD.open("/config.json", FILE_READ);
-                  if (!configFile) {
-                    SerialBT.println("❌ Error al abrir config.json.");
-                    return;
-                  }
-
-                  JsonDocument doc;
-                  DeserializationError error = deserializeJson(doc, configFile);
-                  configFile.close();
-
-                  if (error) {
-                    SerialBT.println("❌ Error al parsear JSON.");
-                    return;
-                  }
-
-                  doc["intervalo_minutos"] = nuevoIntervalo;
-                  SD.remove("/config.json");
-                  configFile = SD.open("/config.json", FILE_WRITE);
-                  if (!configFile) {
-                    SerialBT.println("❌ No se pudo guardar nuevo intervalo.");
-                    return;
-                  }
-
-                  serializeJsonPretty(doc, configFile);
-                  configFile.close();
-
-                  SerialBT.println("✅ Intervalo actualizado a " + String(nuevoIntervalo) + " min.");
-                  valorValido = true;
-                } else {
-                  SerialBT.println("⚠️ Valor invalido. Debe estar entre 1 y 1440.");
-                }
-              }
-              respuestaIntervaloValida = true;
-
-            } else if (r == 'N') {
-              SerialBT.println("⏭️ Intervalo de sleep no modificado.");
-              respuestaIntervaloValida = true;
-
-            } else {
-              SerialBT.println("❓ Respuesta no valida. Usa 'S' o 'N'.");
-            }
-          }
-          delay(100);
-        }
-
-        // Preguntar si desea editar el numero de telefono
-        SerialBT.println("📱 ¿Deseas editar el numero de telefono para SMS? (S/N)");
-        bool respuestaTelefonoValida = false;
-
-        while (SerialBT.available()) SerialBT.read();
-        delay(200);
-
-        while (!respuestaTelefonoValida) {
-          if (SerialBT.available()) {
-            char r = toupper(SerialBT.read());
-            if (r == 'S') {
-              bool telefonoValido = false;
-              while (!telefonoValido) {
-                SerialBT.println("✏️ Ingresa los 10 digitos del numero (ej: 4421234567):");
-
-                while (SerialBT.available()) SerialBT.read();
-                delay(200);
-
-                String numeroUsuario = "";
-                while (true) {
-                  if (SerialBT.available()) {
-                    char c = SerialBT.read();
-                    if (c == '\n' || c == '\r') break;
-                    if (isDigit(c)) numeroUsuario += c;
-                  }
-                  delay(10);
-                }
-
-                if (numeroUsuario.length() == 10) {
-                  String numeroCompleto = "+52" + numeroUsuario;
-                  config.numero_SMS = numeroCompleto;
-
-                  File configFile = SD.open("/config.json", FILE_READ);
-                  if (!configFile) {
-                    SerialBT.println("❌ Error al abrir config.json.");
-                    return;
-                  }
-
-                  JsonDocument doc;
-                  DeserializationError error = deserializeJson(doc, configFile);
-                  configFile.close();
-
-                  if (error) {
-                    SerialBT.println("❌ Error al parsear JSON.");
-                    return;
-                  }
-
-                  doc["numero_SMS"] = numeroCompleto;
-                  SD.remove("/config.json");
-                  configFile = SD.open("/config.json", FILE_WRITE);
-                  if (!configFile) {
-                    SerialBT.println("❌ No se pudo guardar nuevo numero.");
-                    return;
-                  }
-
-                  serializeJsonPretty(doc, configFile);
-                  configFile.close();
-
-                  SerialBT.println("✅ Numero actualizado a " + numeroCompleto);
-                  telefonoValido = true;
-                } else {
-                  SerialBT.println("⚠️ Numero invalido. Deben ser exactamente 10 digitos.");
-                }
-              }
-              respuestaTelefonoValida = true;
-
-            } else if (r == 'N') {
-              SerialBT.println("⏭️ Numero de telefono no modificado.");
-              respuestaTelefonoValida = true;
-
-            } else {
-              SerialBT.println("❓ Respuesta no valida. Usa 'S' o 'N'.");
-            }
-          }
-          delay(100);
-        }
-
-        // Preguntar si desea editar el nombre del equipo
-        SerialBT.println("🏷️ ¿Deseas editar el nombre del equipo? (S/N)");
-        bool respuestaNombreValida = false;
-
-        while (SerialBT.available()) SerialBT.read();
-        delay(200);
-
-        while (!respuestaNombreValida) {
-          if (SerialBT.available()) {
-            char r = toupper(SerialBT.read());
-            if (r == 'S') {
-              SerialBT.println("✏️ Ingresa el nuevo nombre del equipo:");
-
-              while (SerialBT.available()) SerialBT.read();
-              delay(200);
-
-              String nuevoNombre = "";
-              while (true) {
-                if (SerialBT.available()) {
-                  char c = SerialBT.read();
-                  if (c == '\n' || c == '\r') break;
-                  if (isPrintable(c)) nuevoNombre += c;
-                }
-                delay(10);
-              }
-
-              nuevoNombre.trim();
-              if (nuevoNombre.length() >= 3 && nuevoNombre.length() <= 30) {
-                config.nombre_equipo = nuevoNombre;
-
-                File configFile = SD.open("/config.json", FILE_READ);
-                if (!configFile) {
-                  SerialBT.println("❌ Error al abrir config.json.");
-                  return;
-                }
-
-                JsonDocument doc;
-                DeserializationError error = deserializeJson(doc, configFile);
-                configFile.close();
-
-                if (error) {
-                  SerialBT.println("❌ Error al parsear JSON.");
-                  return;
-                }
-
-                doc["nombre_equipo"] = nuevoNombre;
-                SD.remove("/config.json");
-                configFile = SD.open("/config.json", FILE_WRITE);
-                if (!configFile) {
-                  SerialBT.println("❌ No se pudo guardar nuevo nombre.");
-                  return;
-                }
-
-                serializeJsonPretty(doc, configFile);
-                configFile.close();
-
-                SerialBT.println("✅ Nombre del equipo actualizado a " + nuevoNombre);
-                respuestaNombreValida = true;
-              } else {
-                SerialBT.println("⚠️ Nombre invalido. Debe tener entre 3 y 30 caracteres.");
-              }
-
-            } else if (r == 'N') {
-              SerialBT.println("⏭️ Nombre del equipo no modificado.");
-              respuestaNombreValida = true;
-
-            } else {
-              SerialBT.println("❓ Respuesta no valida. Usa 'S' o 'N'.");
-            }
-          }
-          delay(100);
-        }
-
-        // Preguntar si desea editar los datos de la API
-        SerialBT.println("🌐 ¿Deseas editar los datos de la API? (S/N)");
-        bool respuestaApiValida = false;
-
-        while (SerialBT.available()) SerialBT.read();
-        delay(200);
-
-        while (!respuestaApiValida) {
-          if (SerialBT.available()) {
-            char r = toupper(SerialBT.read());
-            if (r == 'S') {
-              // Leer archivo
-              File configFile = SD.open("/config.json", FILE_READ);
-              if (!configFile) {
-                SerialBT.println("❌ Error al abrir config.json.");
-                return;
-              }
-              JsonDocument doc;
-              DeserializationError error = deserializeJson(doc, configFile);
-              configFile.close();
-
-              if (error) {
-                SerialBT.println("❌ Error al parsear JSON.");
-                return;
-              }
-
-              // Host
-              SerialBT.println("✏️ Ingresa el nuevo HOST (ej: api.midominio.com):");
-              String nuevoHost = "";
-              while (true) {
-                if (SerialBT.available()) {
-                  char c = SerialBT.read();
-                  if (c == '\n' || c == '\r') break;
-                  if (isPrintable(c)) nuevoHost += c;
-                }
-                delay(10);
-              }
-              nuevoHost.trim();
-              doc["api_host"] = nuevoHost;
-
-              // Puerto
-              SerialBT.println("✏️ Ingresa el nuevo PUERTO (ej: 80):");
-              String puertoStr = "";
-              while (true) {
-                if (SerialBT.available()) {
-                  char c = SerialBT.read();
-                  if (c == '\n' || c == '\r') break;
-                  if (isDigit(c)) puertoStr += c;
-                }
-                delay(10);
-              }
-              doc["api_puerto"] = puertoStr.toInt();
-
-              // Endpoint
-              SerialBT.println("✏️ Ingresa el nuevo ENDPOINT (ej: /api/registro):");
-              String nuevoEndpoint = "";
-              while (true) {
-                if (SerialBT.available()) {
-                  char c = SerialBT.read();
-                  if (c == '\n' || c == '\r') break;
-                  if (isPrintable(c)) nuevoEndpoint += c;
-                }
-                delay(10);
-              }
-              nuevoEndpoint.trim();
-              doc["api_endpoint"] = nuevoEndpoint;
-
-              // Guardar archivo
-              SD.remove("/config.json");
-              configFile = SD.open("/config.json", FILE_WRITE);
-              if (!configFile) {
-                SerialBT.println("❌ No se pudo guardar nuevo archivo.");
-                return;
-              }
-              serializeJsonPretty(doc, configFile);
-              configFile.close();
-
-              SerialBT.println("✅ Datos de API actualizados.");
-              respuestaApiValida = true;
-
-            } else if (r == 'N') {
-              SerialBT.println("⏭️ Datos de API no modificados.");
-              respuestaApiValida = true;
-
-            } else {
-              SerialBT.println("❓ Respuesta no valida. Usa 'S' o 'N'.");
-            }
-          }
-          delay(100);
-        }
-
+        menuBluetoothGeneral();
 
         break;
       } else {
@@ -634,7 +268,7 @@ void setup() {
   ciclos++;
   debugPrint("🔁 Ciclo #" + String(ciclos));
   debugPrint("📦 Firmware: " + String(FIRMWARE_VERSION));
-  debugPrint("🔧 Equipo: " + config.nombre_equipo);
+  debugPrint("🔧 Equipo: " + String(config.nombre_equipo));
   debugPrint("⚙️ Iniciando sistema...");
 
   // Encender modulos alimentados por MOSFET
@@ -711,7 +345,7 @@ void loop() {
 
   // Crear linea de datos
   debugPrint("📊 Datos obtenidos...");
-  const String output = config.nombre_equipo + "," + fechaActual(now) + "," + String(tempC, 1) + "," + String(humidity, 1) + "%," +
+  const String output = String(config.nombre_equipo) + "," + fechaActual(now) + "," + String(tempC, 1) + "," + String(humidity, 1) + "%," +
                 strS30 + "," + strS15 + "," + radiacionStr;
   debugPrint(output);
   guardarEnSD(output);
@@ -731,6 +365,502 @@ void loop() {
   delay(100);
   ultimoEstado = estadoActual;
   esp_deep_sleep_start();
+}
+
+void menuBluetoothGeneral() {
+  while (true) {
+    SerialBT.println();
+    SerialBT.println("📡 ===== MODO CONFIGURACIÓN BLUETOOTH =====");
+    SerialBT.println("0️⃣ Configuración rápida de despliegue 🚀");
+    SerialBT.println("1️⃣ Ver configuración actual");
+    SerialBT.println("2️⃣ Editar parámetros");
+    SerialBT.println("3️⃣ Calibrar sensores de humedad 🌱");
+    SerialBT.println("4️⃣ Guardar configuración 💾");
+    SerialBT.println("5️⃣ Sincronizar hora desde internet 🌐🕒");
+    SerialBT.println("6️⃣ Reiniciar equipo ♻️");
+    SerialBT.println("7️⃣️ Menu de pruebas 📝");
+    SerialBT.println("8️⃣ Salir del modo Bluetooth 🚪");
+    SerialBT.println("🔸 Selecciona una opción: ");
+
+    String entrada = leerLineaBluetooth();
+    entrada.trim();
+    entrada.toLowerCase();
+    const int8_t opcion = entrada.toInt();
+
+    switch (opcion) {
+      case '0':
+        configuracionRapidaDespliegue();
+        break;
+      case '1':
+      mostrarConfiguracionActual();
+        break;
+      case '2':
+      editarConfiguracion();
+        break;
+      case '3':
+      menuCalibracionSensores();
+        break;
+      case '4':
+      guardarConfigEnArchivo();
+        break;
+      case '5':
+        if (config.usar_sim800) {
+          if (!sim800Inicializado) {
+            SerialBT.println("📶 Iniciando SIM800L para sincronizar hora...");
+            sim800Inicializado = iniciarSIM800L();
+
+            if (!sim800Inicializado) {
+              SerialBT.println("❌ No se pudo inicializar el SIM800L. Cancela sincronización.");
+              return;
+            }
+          }
+
+          SerialBT.println("🌐 Intentando sincronizar hora...");
+          if (sincronizarHoraDesdeInternet()) {
+            SerialBT.println("✅ Hora actualizada correctamente.");
+          } else {
+            SerialBT.println("❌ Error al sincronizar hora.");
+          }
+        } else {
+          SerialBT.println("⚠️ El SIM800L está desactivado. Actívalo desde el menú de configuración.");
+        }
+        break;
+      case '6':
+        SerialBT.println("♻️ Reiniciando...");
+        delay(1000);
+        ESP.restart();
+        break;
+      case '7':
+        menuPruebas();
+        break;
+      case '8':
+        SerialBT.println("🚪 Saliendo del modo Bluetooth...");
+        break;
+    default: SerialBT.println("❌ Opción inválida. Intenta de nuevo.");
+    }
+  }
+}
+
+void configuracionRapidaDespliegue() {
+  SerialBT.println("\n🚀 Iniciando configuración rápida de despliegue...\n");
+
+  // Cambiar nombre del equipo
+  editarCampoConfig("nombre del equipo", config.nombre_equipo, sizeof(config.nombre_equipo));
+
+  // Sincronizar hora (si SIM800 está activo)
+  if (config.usar_sim800) {
+    if (!sim800Inicializado) {
+      SerialBT.println("📶 Iniciando SIM800L para sincronizar hora...");
+      sim800Inicializado = iniciarSIM800L();
+
+      if (!sim800Inicializado) {
+        SerialBT.println("❌ No se pudo inicializar el SIM800L. Se omite sincronización.");
+      }
+    }
+
+    if (sim800Inicializado) {
+      SerialBT.println("🌐 Sincronizando hora desde internet...");
+      if (sincronizarHoraDesdeInternet()) {
+        SerialBT.println("✅ Hora sincronizada correctamente.");
+      } else {
+        SerialBT.println("❌ Fallo al sincronizar hora.");
+      }
+    }
+  } else {
+    SerialBT.println("⚠️ SIM800L desactivado. No se sincroniza la hora.");
+  }
+
+  // Calibración de sensores
+  calibrarSensoresSuelo();
+
+  // Guardar configuración
+  SerialBT.println("💾 Guardando configuración...");
+  if (guardarConfigEnArchivo()) {
+    SerialBT.println("✅ Configuración guardada exitosamente.");
+  } else {
+    SerialBT.println("❌ Error al guardar la configuración.");
+  }
+
+  // Mensaje final
+  SerialBT.println("✅ Configuración rápida completada y guardada.");
+  SerialBT.println("Ya puedes instalar el equipo 🚀 ¿Deseas reiniciar el sistema ahora? (s/n): ");
+  String respuesta = leerLineaBluetooth();
+  respuesta.toLowerCase();
+
+  if (respuesta == "s" || respuesta == "si") {
+    SerialBT.println("🔄 Reiniciando sistema...");
+    delay(1000);
+    ESP.restart();
+  } else {
+    SerialBT.println("⏹️ Reinicio cancelado. Puedes continuar configurando el sistema.");
+  }
+}
+
+void menuPruebas() {
+  while (true) {
+    SerialBT.println("\n📶 Menú de pruebas:");
+    SerialBT.println("1️⃣ Enviar datos de prueba a la API 🌐");
+    SerialBT.println("2️⃣ Enviar SMS de prueba 📲");
+    SerialBT.println("0️⃣ Volver al menú principal 🔙");
+    SerialBT.print("🔸 Elige una opción: ");
+
+    String opcion = leerLineaBluetooth();
+
+    if (opcion == "1") {
+      probarEnvioAPI();
+    } else if (opcion == "2") {
+      probarEnvioSMS();
+    } else if (opcion == "0") {
+      SerialBT.println("🔙 Volviendo al menú principal...");
+      break;
+    } else {
+      SerialBT.println("❌ Opción no válida.");
+    }
+  }
+}
+
+void probarEnvioAPI() {
+  if (!config.usar_sim800) {
+    SerialBT.println("⚠️ El SIM800L está desactivado. Actívalo desde el menú de configuración.");
+    return;
+  }
+
+  if (!sim800Inicializado) {
+    SerialBT.println("📶 Iniciando SIM800L para envío de prueba...");
+    sim800Inicializado = iniciarSIM800L();
+
+    if (!sim800Inicializado) {
+      SerialBT.println("❌ No se pudo inicializar el SIM800L.");
+      return;
+    }
+  }
+
+  SerialBT.println("🌐 Enviando datos de prueba a la API...");
+  const String testLine = String(config.nombre_equipo) + ",pruebaFecha,0.0, 0.0, 0.0, 0.0, 0";
+  const bool exito = enviarDatosAPI(testLine);
+
+  if (exito) {
+    SerialBT.println("✅ Envío exitoso.");
+  } else {
+    SerialBT.println("❌ Error en el envío de datos.");
+  }
+}
+
+void probarEnvioSMS() {
+  if (!config.usar_sim800) {
+    SerialBT.println("⚠️ El SIM800L está desactivado. Actívalo desde el menú de configuración.");
+    return;
+  }
+
+  if (!sim800Inicializado) {
+    SerialBT.println("📶 Iniciando SIM800L para envío de SMS...");
+    sim800Inicializado = iniciarSIM800L();
+
+    if (!sim800Inicializado) {
+      SerialBT.println("❌ No se pudo inicializar el SIM800L.");
+      return;
+    }
+  }
+
+  const String mensaje = "📡 SMS de prueba desde " + String(config.nombre_equipo);
+  SerialBT.println("📲 Enviando SMS de prueba al número configurado...");
+
+  if (enviarSMS(mensaje)) {
+    SerialBT.println("✅ SMS enviado correctamente.");
+  } else {
+    SerialBT.println("❌ Error al enviar el SMS.");
+  }
+}
+
+String leerLineaBluetooth() {
+  String entrada = "";
+  while (true) {
+    while (SerialBT.available()) {
+      char c = SerialBT.read();
+      if (c == '\n' || c == '\r') {
+        if (entrada.length() > 0) return entrada;
+      } else {
+        entrada += c;
+      }
+    }
+    delay(10);
+  }
+}
+
+int leerEnteroBluetooth() {
+  return leerLineaBluetooth().toInt();
+}
+
+void mostrarConfiguracionActual() {
+  SerialBT.println("📄 ===== CONFIGURACIÓN ACTUAL =====");
+
+  SerialBT.print("🔹 Nombre del equipo: ");
+  SerialBT.println(config.nombre_equipo);
+
+  SerialBT.print("🔹 Número de serie: ");
+  SerialBT.println(config.numSerie);
+
+  SerialBT.print("⏱️ Intervalo de medición: ");
+  SerialBT.print(config.intervalo_minutos);
+  SerialBT.println(" min");
+
+  SerialBT.print("🌐 APN: ");
+  SerialBT.println(config.apn);
+
+  SerialBT.print("👤 Usuario APN: ");
+  SerialBT.println(config.usuario_apn);
+
+  SerialBT.print("🔐 Contraseña APN: ");
+  SerialBT.println(config.contrasena_apn);
+
+  SerialBT.print("📞 Número SMS: ");
+  SerialBT.println(config.numero_SMS);
+
+  SerialBT.print("📶 SIM800L: ");
+  SerialBT.println(config.usar_sim800 ? "✅ Activado" : "❌ Desactivado");
+
+  SerialBT.print("🔌 Modbus (piranómetro): ");
+  SerialBT.println(config.usar_modbus ? "✅ Activado" : "❌ Desactivado");
+
+  SerialBT.print("💡 LEDs de estado: ");
+  SerialBT.println(config.usar_leds_estado ? "✅ Activados" : "❌ Apagados");
+
+  SerialBT.print("📝 Archivo log: ");
+  SerialBT.println(config.archivo_log);
+
+  SerialBT.print("📤 Reintentos SMS: ");
+  SerialBT.print(config.reintentos_envio_sms);
+  SerialBT.print(" / Espera: ");
+  SerialBT.print(config.espera_entre_reintentos_sms_ms);
+  SerialBT.println(" ms");
+
+  SerialBT.print("🌍 API Host: ");
+  SerialBT.println(config.api_host);
+
+  SerialBT.print("🔌 API Puerto: ");
+  SerialBT.println(config.api_puerto);
+
+  SerialBT.print("📍 API Endpoint: ");
+  SerialBT.println(config.api_endpoint);
+
+  SerialBT.print("🌱 Suelo S30 min/max: ");
+  SerialBT.print(config.sueloS30_min);
+  SerialBT.print(" / ");
+  SerialBT.println(config.sueloS30_max);
+
+  SerialBT.print("🌿 Suelo S15 min/max: ");
+  SerialBT.print(config.sueloS15_min);
+  SerialBT.print(" / ");
+  SerialBT.println(config.sueloS15_max);
+
+  SerialBT.println("✅ Fin de configuración.");
+}
+
+void editarConfiguracion() {
+  while (true) {
+    SerialBT.println("\n⚙️ === EDITAR CONFIGURACIÓN ===");
+    SerialBT.println("1️⃣ Cambiar nombre del equipo");
+    SerialBT.println("2️⃣ Cambiar intervalo de medición (min)");
+    SerialBT.println("3️⃣ Configurar APN 🌐");
+    SerialBT.println("4️⃣ Configurar número de teléfono SMS 📞");
+    SerialBT.println("5️⃣ Activar/Desactivar SIM800L 📶");
+    SerialBT.println("6️⃣ Activar/Desactivar Modbus 🔌");
+    SerialBT.println("7️⃣ Activar/Desactivar LEDs de estado 💡");
+    SerialBT.println("8️⃣ Configurar servidor API 🌍");
+    SerialBT.println("9️⃣ Configurar reintentos de SMS");
+    SerialBT.println("0️⃣ Volver al menú principal 🔙");
+    SerialBT.print("🔸 Selecciona una opción: ");
+
+    String opcion = leerLineaBluetooth();
+
+    if (opcion == "1") {
+      editarCampoConfig("nombre del equipo", config.nombre_equipo, sizeof(config.nombre_equipo));
+    } else if (opcion == "2") {
+      editarCampoNumConfig("intervalo de medición (min)", &config.intervalo_minutos);
+    } else if (opcion == "3") {
+      editarCampoConfig("APN", config.apn, sizeof(config.apn));
+      editarCampoConfig("usuario APN", config.usuario_apn, sizeof(config.usuario_apn));
+      editarCampoConfig("contraseña APN", config.contrasena_apn, sizeof(config.contrasena_apn));
+    } else if (opcion == "4") {
+      editarCampoConfig("número SMS", config.numero_SMS, sizeof(config.numero_SMS));
+    } else if (opcion == "5") {
+      alternarCampoBool("SIM800L", &config.usar_sim800);
+    } else if (opcion == "6") {
+      alternarCampoBool("Modbus", &config.usar_modbus);
+    } else if (opcion == "7") {
+      alternarCampoBool("LEDs de estado", &config.usar_leds_estado);
+    } else if (opcion == "8") {
+      editarCampoConfig("API host", config.api_host, sizeof(config.api_host));
+      editarCampoConfig("API endpoint", config.api_endpoint, sizeof(config.api_endpoint));
+      editarCampoNumConfig("API puerto", &config.api_puerto);
+    } else if (opcion == "9") {
+      editarCampoNumConfig("reintentos de SMS", &config.reintentos_envio_sms);
+      editarCampoNumConfig("espera entre reintentos (ms)", &config.espera_entre_reintentos_sms_ms);
+    } else if (opcion == "0") {
+      SerialBT.println("🔙 Volviendo al menú principal...");
+      break;
+    } else {
+      SerialBT.println("❌ Opción inválida. Intenta nuevamente.");
+    }
+  }
+}
+
+void editarCampoConfig(const char* nombreCampo, char* destino, size_t maxLen) {
+  SerialBT.printf("✏️ Ingresa nuevo valor para %s: ", nombreCampo);
+  String entrada = leerLineaBluetooth();
+  entrada.trim();
+  entrada.toCharArray(destino, maxLen);
+  SerialBT.println("✅ Valor actualizado.");
+}
+
+void editarCampoNumConfig(const char* nombreCampo, int* destino) {
+  SerialBT.printf("✏️ Ingresa nuevo valor numérico para %s: ", nombreCampo);
+  int valor = leerEnteroBluetooth();
+  *destino = valor;
+  SerialBT.println("✅ Valor actualizado.");
+}
+
+void alternarCampoBool(const char* nombreCampo, bool* destino) {
+  *destino = !(*destino);
+  SerialBT.printf("🔁 %s ahora está: %s\n", nombreCampo, *destino ? "✅ Activado" : "❌ Desactivado");
+}
+
+void menuCalibracionSensores() {
+  while (true) {
+    SerialBT.println("\n🌱 === CALIBRACIÓN DE SENSORES DE HUMEDAD ===");
+    SerialBT.println("1️⃣ Iniciar calibración interactiva");
+    SerialBT.println("2️⃣ Mostrar valores actuales de calibración");
+    SerialBT.println("3️⃣ Volver al menú anterior 🔙");
+    SerialBT.print("🔸 Selecciona una opción: ");
+
+    String opcion = leerLineaBluetooth();
+
+    if (opcion == "1") {
+      SerialBT.println("🧪 Iniciando proceso de calibración...");
+      calibrarSensoresSuelo();
+      SerialBT.println("✅ Calibración finalizada.");
+    } else if (opcion == "2") {
+      SerialBT.println("📊 Valores actuales de calibración:");
+      SerialBT.print("S30 seco (min): ");
+      SerialBT.println(config.sueloS30_min);
+      SerialBT.print("S30 mojado (max): ");
+      SerialBT.println(config.sueloS30_max);
+      SerialBT.print("S15 seco (min): ");
+      SerialBT.println(config.sueloS15_min);
+      SerialBT.print("S15 mojado (max): ");
+      SerialBT.println(config.sueloS15_max);
+    } else if (opcion == "3") {
+      SerialBT.println("🔙 Volviendo al menú anterior...");
+      break;
+    } else {
+      SerialBT.println("❌ Opción inválida.");
+    }
+  }
+}
+
+bool guardarConfigEnArchivo() {
+  JsonDocument doc;
+
+  // Copiar todos los campos del struct config al objeto JSON
+  doc["nombre_equipo"] = config.nombre_equipo;
+  doc["numSerie"] = config.numSerie;  // No editable, pero se conserva
+
+  doc["sueloS30_min"] = config.sueloS30_min;
+  doc["sueloS30_max"] = config.sueloS30_max;
+  doc["sueloS15_min"] = config.sueloS15_min;
+  doc["sueloS15_max"] = config.sueloS15_max;
+
+  doc["intervalo_minutos"] = config.intervalo_minutos;
+
+  doc["apn"] = config.apn;
+  doc["usuario_apn"] = config.usuario_apn;
+  doc["contrasena_apn"] = config.contrasena_apn;
+  doc["numero_SMS"] = config.numero_SMS;
+
+  doc["usar_modbus"] = config.usar_modbus;
+  doc["usar_sim800"] = config.usar_sim800;
+  doc["usar_leds_estado"] = config.usar_leds_estado;
+
+  doc["archivo_log"] = config.archivo_log;
+  doc["reintentos_envio_sms"] = config.reintentos_envio_sms;
+  doc["espera_entre_reintentos_sms_ms"] = config.espera_entre_reintentos_sms_ms;
+
+  doc["api_host"] = config.api_host;
+  doc["api_puerto"] = config.api_puerto;
+  doc["api_endpoint"] = config.api_endpoint;
+
+  // Escribir en archivo
+  SD.remove("/config.json");
+  File configFile = SD.open("/config.json", FILE_WRITE);
+  if (!configFile) {
+    SerialBT.println("❌ Error al abrir config.json para escritura.");
+    return false;
+  }
+
+  if (serializeJsonPretty(doc, configFile) == 0) {
+    SerialBT.println("❌ Error al escribir JSON en config.json.");
+    return false;
+  }
+
+  SerialBT.println("✅ Configuración guardada exitosamente en config.json.");
+  configFile.close();
+  return true;
+}
+
+bool cargarConfiguracion() {
+  debugPrint("📂 Cargando configuracion desde config.json...");
+
+  if (!SD.exists("/config.json")) {
+    debugPrint("❌ No se encontro config.json");
+    return false;
+  }
+
+  File configFile = SD.open("/config.json", FILE_READ);
+  if (!configFile) {
+    debugPrint("❌ No se pudo abrir config.json");
+    return false;
+  }
+
+  JsonDocument doc;
+  const DeserializationError error = deserializeJson(doc, configFile);
+  configFile.close();
+
+  if (error) {
+    debugPrint("❌ Error al parsear config.json: " + String(error.c_str()));
+    return false;
+  }
+
+  // Copiar campos tipo texto (char[]) usando strncpy
+  strncpy(config.nombre_equipo, doc["nombre_equipo"] | "ESP32", sizeof(config.nombre_equipo));
+  strncpy(config.numSerie, doc["numSerie"] | "CDHS000", sizeof(config.numSerie));
+  strncpy(config.apn, doc["apn"] | "internet.itelcel.com", sizeof(config.apn));
+  strncpy(config.usuario_apn, doc["usuario_apn"] | "webgprs", sizeof(config.usuario_apn));
+  strncpy(config.contrasena_apn, doc["contrasena_apn"] | "webgprs2002", sizeof(config.contrasena_apn));
+  strncpy(config.numero_SMS, doc["numero_SMS"] | "+520000000000", sizeof(config.numero_SMS));
+  strncpy(config.archivo_log, doc["archivo_log"] | "log.csv", sizeof(config.archivo_log));
+  strncpy(config.api_host, doc["api_host"] | "miapi.ejemplo.com", sizeof(config.api_host));
+  strncpy(config.api_endpoint, doc["api_endpoint"] | "/api/registro", sizeof(config.api_endpoint));
+
+  // Copiar campos numéricos
+  config.sueloS30_min = doc["sueloS30_min"] | 0;
+  config.sueloS30_max = doc["sueloS30_max"] | 20000;
+  config.sueloS15_min = doc["sueloS15_min"] | 0;
+  config.sueloS15_max = doc["sueloS15_max"] | 20000;
+  config.intervalo_minutos = doc["intervalo_minutos"] | 30;
+  config.usar_modbus = doc["usar_modbus"] | true;
+  config.usar_sim800 = doc["usar_sim800"] | true;
+  config.usar_leds_estado = doc["usar_leds_estado"] | true;
+  config.timeout_red = doc["timeout_red"] | 20000;
+  config.reintentos_envio_sms = doc["reintentos_envio_sms"] | 3;
+  config.espera_entre_reintentos_sms_ms = doc["espera_entre_reintentos_sms_ms"] | 1000;
+  config.api_puerto = doc["api_puerto"] | 80;
+
+  // Mensaje de depuración
+  debugPrint("✅ Configuracion cargada:");
+  debugPrint("🔹 Equipo: " + String(config.nombre_equipo));
+  debugPrint("🔹 Intervalo: " + String(config.intervalo_minutos) + " min");
+  debugPrint("🔹 APN: " + String(config.apn));
+  return true;
 }
 
 int calcularPorcentajeHumedad(const int valor, const int seco, const int mojado) {
@@ -796,56 +926,6 @@ bool iniciarSIM800L() {
     actualizarEstado(FALLO_NO_CRITICO);
     return false;
   }
-}
-
-bool cargarConfiguracion() {
-  debugPrint("📂 Cargando configuracion desde config.json...");
-
-  if (!SD.exists("/config.json")) {
-    debugPrint("❌ No se encontro config.json");
-    return false;
-  }
-
-  File configFile = SD.open("/config.json", FILE_READ);
-  if (!configFile) {
-    debugPrint("❌ No se pudo abrir config.json");
-    return false;
-  }
-
-  JsonDocument doc;
-  const DeserializationError error = deserializeJson(doc, configFile);
-  configFile.close();
-
-  if (error) {
-    debugPrint("❌ Error al parsear config.json: " + String(error.c_str()));
-    return false;
-  }
-
-  config.nombre_equipo = doc["nombre_equipo"] | "ESP32";
-  config.sueloS30_min = doc["sueloS30_min"] | 0;
-  config.sueloS30_max = doc["sueloS30_max"] | 20000;
-  config.sueloS15_min = doc["sueloS15_min"] | 0;
-  config.sueloS15_max = doc["sueloS15_max"] | 20000;
-  config.intervalo_minutos = doc["intervalo_minutos"] | 30;
-  config.apn = doc["apn"] | "internet.itelcel.com";
-  config.usuario_apn = doc["usuario_apn"] | "webgprs";
-  config.contrasena_apn = doc["contrasena_apn"] | "webgprs2002";
-  config.numero_SMS = doc["numero_SMS"] | "+520000000000";
-  config.usar_modbus = doc["usar_modbus"] | true;
-  config.usar_sim800 = doc["usar_sim800"] | true;
-  config.timeout_red = doc["timeout_red"] | 20000;
-  config.archivo_log = doc["archivo_log"] | "log.csv";
-  config.reintentos_envio_sms = doc["reintentos_envio_sms"] | 3;
-  config.espera_entre_reintentos_sms_ms = doc["espera_entre_reintentos_sms_ms"] | 1000;
-  config.api_host = doc["api_host"] | "miapi.ejemplo.com";
-  config.api_puerto = doc["api_puerto"] | 80;
-  config.api_endpoint = doc["api_endpoint"] | "/api/registro";
-
-  debugPrint("✅ Configuracion cargada:");
-  debugPrint("🔹 Equipo: " + config.nombre_equipo);
-  debugPrint("🔹 Intervalo: " + String(config.intervalo_minutos) + " min");
-  debugPrint("🔹 APN: " + config.apn);
-  return true;
 }
 
 bool iniciarSD() {
@@ -923,49 +1003,14 @@ void calibrarSensoresSuelo() {
   int S15_mojado = leerPromedioADC(1, 5, 1000, true);
   SerialBT.println("✅ Leido S15 mojado: " + String(S15_mojado));
 
-  // === LECTURA Y PARSEO DEL ARCHIVO ACTUAL ===
-  if (!SD.exists("/config.json")) {
-    SerialBT.println("❌ No se encontro config.json para guardar la calibracion.");
-    return;
-  }
+  // === ACTUALIZACIÓN EN RAM ===
+  config.sueloS30_min = S30_mojado;
+  config.sueloS30_max = S30_seco;
+  config.sueloS15_min = S15_mojado;
+  config.sueloS15_max = S15_seco;
 
-  File configFile = SD.open("/config.json", FILE_READ);
-  if (!configFile) {
-    SerialBT.println("❌ Error al abrir config.json para lectura.");
-    return;
-  }
-
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, configFile);
-  configFile.close();
-
-  if (error) {
-    SerialBT.println("❌ Error al parsear config.json: " + String(error.c_str()));
-    return;
-  }
-
-  // === ACTUALIZACIoN DE VALORES ===
-  doc["sueloS30_min"] = S30_mojado;
-  doc["sueloS30_max"] = S30_seco;
-  doc["sueloS15_min"] = S15_mojado;
-  doc["sueloS15_max"] = S15_seco;
-
-  // === BORRAR Y REESCRIBIR EL ARCHIVO DE CONFIGURACIoN ===
-  SD.remove("/config.json");  // eliminar version anterior
-
-  configFile = SD.open("/config.json", FILE_WRITE);
-  if (!configFile) {
-    SerialBT.println("❌ No se pudo crear config.json para escritura.");
-    return;
-  }
-
-  if (serializeJsonPretty(doc, configFile) == 0) {
-    SerialBT.println("❌ Error al escribir JSON en config.json.");
-  } else {
-    SerialBT.println("✅ Calibracion guardada exitosamente en config.json.");
-  }
-
-  configFile.close();
+  SerialBT.println("✅ Calibración almacenada en memoria RAM.");
+  SerialBT.println("💾 Recuerda guardar la configuración si deseas hacerla permanente.");
 }
 
 void debugPrint(const String& mensaje) {
@@ -984,7 +1029,7 @@ bool enviarSMS(const String& mensaje) {
   for (int intento = 1; intento <= config.reintentos_envio_sms; intento++) {
     debugPrint("📤 Enviando SMS (intento " + String(intento) + ")...");
 
-    if (modem.isNetworkConnected() && modem.sendSMS(config.numero_SMS.c_str(), mensaje)) {
+    if (modem.isNetworkConnected() && modem.sendSMS(config.numero_SMS, mensaje)) {
       debugPrint("✅ SMS enviado correctamente.");
       return true;
     } else {
@@ -1069,7 +1114,7 @@ bool conectarGPRS() {
     return false;
   }
 
-  if (!modem.gprsConnect(config.apn.c_str(), config.usuario_apn.c_str(), config.contrasena_apn.c_str())) {
+  if (!modem.gprsConnect(config.apn, config.usuario_apn, config.contrasena_apn)) {
     debugPrint("Error al conectar APN.");
     return false;
   }
@@ -1094,9 +1139,9 @@ String fechaActual(const DateTime& dt) {
 }
 
 void guardarEnSD(const String& linea) {
-  const bool nuevoArchivo = !SD.exists("/" + config.archivo_log);
+  const bool nuevoArchivo = !SD.exists("/" + String(config.archivo_log));
 
-  logFile = SD.open("/" + config.archivo_log, FILE_APPEND);
+  logFile = SD.open("/" + String(config.archivo_log), FILE_APPEND);
   if (!logFile) {
     debugPrint("❌ Error al abrir log.csv");
     actualizarEstado(FALLO_CRITICO);
@@ -1113,16 +1158,16 @@ void guardarEnSD(const String& linea) {
     debugPrint("❌ Error al escribir en log.csv");
     actualizarEstado(FALLO_CRITICO);
   } else {
-    debugPrint("📥 Datos guardados en " + config.archivo_log);
+    debugPrint("📥 Datos guardados en " + String(config.archivo_log));
   }
 
   logFile.close();
 }
 
-void enviarDatosAPI(const String &lineaCSV) {
-  if (!config.usar_sim800 || !modem.isNetworkConnected()) {
+bool enviarDatosAPI(const String &lineaCSV) {
+  if (!modem.isNetworkConnected() || !config.usar_sim800) {
     debugPrint("📛 No hay red disponible o SIM800 desactivado.");
-    return;
+    return false;
   }
 
   JsonDocument doc;
@@ -1153,7 +1198,7 @@ void enviarDatosAPI(const String &lineaCSV) {
   debugPrint("🌐 Conectando a " + host + ":" + String(port));
   if (!gsmClient.connect(host.c_str(), port)) {
     debugPrint("❌ No se pudo conectar al servidor");
-    return;
+    return false;
   }
 
   String request =
@@ -1179,6 +1224,7 @@ void enviarDatosAPI(const String &lineaCSV) {
   }
 
   gsmClient.stop();
+  return true;
 }
 
 bool verificarModbus() {
@@ -1224,7 +1270,7 @@ void actualizarEstado(EstadoSistema estado, const String& id, const String& desc
 
       const String fechaHora = fechaActual(rtc.now());
       debugPrint("Fallo critico detectado. El sistema pasara a modo sleep hasta revision.");
-      const String mensaje = "Equipo: " + config.nombre_equipo + "\nFALLO CRITICO\nID: " + id + "\nHora: " + fechaHora + "\n" +
+      const String mensaje = "Equipo: " + String(config.nombre_equipo) + "\nFALLO CRITICO\nID: " + id + "\nHora: " + fechaHora + "\n" +
                        descripcion + "\nAccion: Modo sleep indefinido.";
       enviarSMS(mensaje);
 
@@ -1241,7 +1287,7 @@ void actualizarEstado(EstadoSistema estado, const String& id, const String& desc
       parpadearLed(LED_ROJO, 4, true);
 
       const String fechaHora = fechaActual(rtc.now());
-      const String mensaje = "Equipo: " + config.nombre_equipo + "\nFALLO MEDIO\nID: " + id + "\nHora: " + fechaHora + "\n" + descripcion;
+      const String mensaje = "Equipo: " + String(config.nombre_equipo) + "\nFALLO MEDIO\nID: " + id + "\nHora: " + fechaHora + "\n" + descripcion;
       enviarSMS(mensaje);
       break;
     }
