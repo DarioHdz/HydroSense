@@ -1,6 +1,6 @@
 {
-  "nombre_equipo": "ESP32_NODE_01",
-  "numSerie": "CDHS001",
+  "nombre_equipo": "HydroSense_0x",
+  "numSerie": "CDHS00x",
   "sueloS30_min": 9004,
   "sueloS30_max": 9002,
   "sueloS15_min": 10434,
