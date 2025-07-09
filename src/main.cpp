@@ -53,18 +53,19 @@ PIN LIST:
 #include <ModbusMaster.h>
 #include <ArduinoJson.h>
 #include <SHT1x-ESP.h>
+#include <WebServer.h>
+#include <Arduino.h>
 #include <RTClib.h>
 #include <Wire.h>
-#include <Arduino.h>
-#include "FS.h"
-#include "SD.h"
+#include <WiFi.h>
+#include <FS.h>
+#include <SD.h>
 
 // RTC DS3231
 bool rtcInicializado = false;
 #define SDA_PIN 15
 #define SCL_PIN 4
 RTC_DS3231 rtc;
-const char* daysOfWeek[7] = { "Domingo", "Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado" };
 
 // Sensor SHT-10
 #define DATA_PIN 16
@@ -76,8 +77,8 @@ SHT1x sht1x(DATA_PIN, CLOCK_PIN, SHT1x::Voltage::DC_3_3v);
 File logFile;
 
 // ADC sensores suelo
-Adafruit_ADS1115 ads;
 #define TOLERANCIA_ADC 250
+Adafruit_ADS1115 ads;
 
 // Pines RS485
 #define RS485_DE_RE 27
@@ -91,12 +92,12 @@ ModbusMaster node;
 HardwareSerial sim800(1);
 TinyGsm modem(sim800);
 TinyGsmClient gsmClient(modem);
-constexpr char phoneNumber[] = "+524427547302";
 bool sim800Inicializado = false;
+constexpr char phoneNumber[] = "+524427547302";
 
 // MOSFET de control
-#define MODEM_PWR 22
 #define POWER_CTRL_PIN 21
+#define MODEM_PWR 22
 
 // LEDs de estado
 #define LED_VERDE 13
@@ -107,8 +108,13 @@ bool sim800Inicializado = false;
 bool bluetoothActivo = false;
 BluetoothSerial SerialBT;
 
+// WebServer
+const char* ssid_ap = "HydroSense-AP";
+const char* password_ap = "hidrosense";
+WebServer servidorWeb(80);
+
 // Variables para control del sistema
-#define FIRMWARE_VERSION "v2.4.2"
+#define FIRMWARE_VERSION "v2.5"
 enum EstadoSistema {
   ESTADO_OK,
   FALLO_CRITICO,
@@ -118,6 +124,8 @@ enum EstadoSistema {
 EstadoSistema estadoActual;
 RTC_DATA_ATTR uint8_t ciclos = 0;
 RTC_DATA_ATTR EstadoSistema ultimoEstado = ESTADO_OK;
+bool modoBluetooth = false;
+bool modoServidorWeb = false;
 
 // Configuracion del sistema
 struct ConfiguracionSistema {
@@ -153,6 +161,7 @@ void editarCampoNumConfig(const char* nombreCampo, int* destino);
 void parpadearLed(uint8_t pinLed, uint8_t cantidad, bool largo);
 int calcularPorcentajeHumedad(int valor, int seco, int mojado);
 void alternarCampoBool(const char* nombreCampo, bool* destino);
+void parpadearAmbosLeds(uint8_t cantidad, bool largo);
 bool enviarDatosAPI(const String &lineaCSV);
 String fechaActual(const DateTime& dt);
 void debugPrint(const String& mensaje);
@@ -170,6 +179,9 @@ void editarConfiguracion();
 bool cargarConfiguracion();
 int leerRadiacionModbus();
 int leerEnteroBluetooth();
+void iniciarServidorWeb();
+void manejarDescargaLog();
+void detectarModoInicio();
 bool verificarModbus();
 void probarEnvioAPI();
 void probarEnvioSMS();
@@ -209,55 +221,22 @@ void setup() {
   if (!iniciarADS1115()) return;
   if (!iniciarRTC()) return;
 
-  // Verificar boton y activar Bluetooth antes que cualquier otra cosa
-  if (digitalRead(PIN_BLUETOOTH_ACTIVADOR) == LOW) {
-    Serial.println("🔧 Activando Bluetooth...");
+  detectarModoInicio();
+
+  if (modoServidorWeb) {
+    debugPrint("🌐 Iniciando modo servidor web para descarga...");
+    iniciarServidorWeb();
+    return;
+  }
+
+  if (modoBluetooth) {
+    debugPrint("🔧 Iniciando modo Bluetooth...");
     bluetoothActivo = true;
     SerialBT.begin(config.nombre_equipo);
-
-    // 🔄 Confirmacion visual: parpadeo rapido de ambos LEDs
-    for (int i = 0; i < 5; i++) {
-      digitalWrite(LED_VERDE, HIGH);
-      digitalWrite(LED_ROJO, HIGH);
-      delay(150);
-      digitalWrite(LED_VERDE, LOW);
-      digitalWrite(LED_ROJO, LOW);
-      delay(150);
-      digitalWrite(LED_VERDE, HIGH);
-      digitalWrite(LED_ROJO, HIGH);
-      delay(150);
-      digitalWrite(LED_VERDE, LOW);
-      digitalWrite(LED_ROJO, LOW);
-      delay(150);
-    }
-
-    constexpr unsigned long tiempoEsperaConexion = 20000;
-    unsigned long inicioConexion = millis();
-
-    while (millis() - inicioConexion < tiempoEsperaConexion) {
-      if (SerialBT.hasClient()) {
-
-        Serial.println("✅ Cliente Bluetooth conectado");
-        SerialBT.println("✅ Conexion establecida con ESP32");
-        SerialBT.println("🔧 Bluetooth listo para depuracion");
-
-        menuBluetoothGeneral();
-
-        break;
-      }
-      Serial.println("⏳ Esperando conexion Bluetooth...");
-      delay(1000);
-    }
-
-    if (!SerialBT.hasClient()) {
-      Serial.println("⚠️ No se conecto ningun cliente por Bluetooth");
-      SerialBT.end();
-      bluetoothActivo = false;
-    }
-
-  } else {
-    Serial.println("❌ Bluetooth no activado");
+    menuBluetoothGeneral();
+    return;
   }
+
 
   // CONTADOR
   ciclos++;
@@ -276,6 +255,11 @@ void setup() {
   actualizarEstado(ESTADO_OK);
 }
 void loop() {
+  if (modoServidorWeb) {
+    servidorWeb.handleClient();
+    return;
+  }
+
   // Obteniendo fecha
   const DateTime now = rtc.now();
 
@@ -355,79 +339,7 @@ void loop() {
   esp_deep_sleep_start();
 }
 
-void menuBluetoothGeneral() {
-  while (true) {
-    SerialBT.println();
-    SerialBT.println("📡 === MODO CONFIGURACIÓN BLUETOOTH ===");
-    SerialBT.println("0️⃣ Configuración rápida de despliegue 🚀");
-    SerialBT.println("1️⃣ Ver configuración actual");
-    SerialBT.println("2️⃣ Editar parámetros");
-    SerialBT.println("3️⃣ Calibrar sensores de humedad 🌱");
-    SerialBT.println("4️⃣ Guardar configuración 💾");
-    SerialBT.println("5️⃣ Sincronizar hora 🕒");
-    SerialBT.println("6️⃣ Reiniciar equipo ♻️");
-    SerialBT.println("7️⃣️ Menu de pruebas 📝");
-    SerialBT.println("8️⃣ Salir del modo Bluetooth 🚪");
-    SerialBT.println("🔸 Selecciona una opción: ");
-
-    const int8_t opcion = leerEnteroBluetooth();
-
-    switch (opcion) {
-      case 0: configuracionRapidaDespliegue(); break;
-      case 1: mostrarConfiguracionActual(); break;
-      case 2: editarConfiguracion(); break;
-      case 3: menuCalibracionSensores(); break;
-      case 4: guardarConfigEnArchivo(); break;
-      case 5: sincronizarHoraPorBluetooth(); break;
-      case 6:
-        SerialBT.println("♻️ Reiniciando...");
-        delay(1000);
-        ESP.restart();
-        break;
-      case 7: menuPruebas(); break;
-      case 8:
-        SerialBT.println("🚪 Saliendo del modo Bluetooth...");
-        return;
-      default:
-        SerialBT.println("❌ Opción inválida. Intenta de nuevo.");
-    }
-  }
-}
-
-void configuracionRapidaDespliegue() {
-  SerialBT.println("\n🚀 Iniciando configuración rápida de despliegue...\n");
-
-  // Cambiar nombre del equipo
-  editarCampoConfig("nombre del equipo", config.nombre_equipo, sizeof(config.nombre_equipo));
-
-  // Sincronizar hora (si SIM800 está activo)
-  sincronizarHoraPorBluetooth();
-
-  // Calibración de sensores
-  calibrarSensoresSuelo();
-
-  // Guardar configuración
-  SerialBT.println("💾 Guardando configuración...");
-  if (guardarConfigEnArchivo()) {
-    SerialBT.println("✅ Configuración guardada exitosamente.");
-  } else {
-    SerialBT.println("❌ Error al guardar la configuración.");
-  }
-
-  // Mensaje final
-  SerialBT.println("✅ Configuración rápida completada y guardada.");
-  SerialBT.println("Ya puedes instalar el equipo 🚀 ¿Deseas reiniciar el sistema ahora? (s/n): ");
-  String respuesta = leerLineaBluetooth();
-  respuesta.toLowerCase();
-
-  if (respuesta == "s" || respuesta == "si") {
-    SerialBT.println("🔄 Reiniciando sistema...");
-    delay(1000);
-    ESP.restart();
-  } else {
-    SerialBT.println("⏹️ Reinicio cancelado. Puedes continuar configurando el sistema.");
-  }
-}
+// Testing
 void probarEnvioAPI() {
   if (!config.usar_sim800) {
     SerialBT.println("⚠️ El SIM800L está desactivado. Actívalo desde el menú de configuración.");
@@ -518,6 +430,168 @@ bool enviarDatosAPI(const String &lineaCSV) {
 }
 
 // Terminadas
+void menuBluetoothGeneral() {
+  while (true) {
+    servidorWeb.handleClient();
+    SerialBT.println();
+    SerialBT.println("📡 === MODO CONFIGURACIÓN BLUETOOTH ===");
+    SerialBT.println("0️⃣ Configuración rápida de despliegue 🚀");
+    SerialBT.println("1️⃣ Ver configuración actual");
+    SerialBT.println("2️⃣ Editar parámetros");
+    SerialBT.println("3️⃣ Calibrar sensores de humedad 🌱");
+    SerialBT.println("4️⃣ Guardar configuración 💾");
+    SerialBT.println("5️⃣ Sincronizar hora 🕒");
+    SerialBT.println("6️⃣ Reiniciar equipo ♻️");
+    SerialBT.println("7️⃣️ Menu de pruebas 📝");
+    SerialBT.println("8️⃣ Salir del modo Bluetooth 🚪");
+    SerialBT.println("🔸 Selecciona una opción: ");
+
+    const int8_t opcion = leerEnteroBluetooth();
+
+    switch (opcion) {
+      case 0: configuracionRapidaDespliegue(); break;
+      case 1: mostrarConfiguracionActual(); break;
+      case 2: editarConfiguracion(); break;
+      case 3: menuCalibracionSensores(); break;
+      case 4: guardarConfigEnArchivo(); break;
+      case 5: sincronizarHoraPorBluetooth(); break;
+      case 6:
+        SerialBT.println("♻️ Reiniciando...");
+        delay(1000);
+        ESP.restart();
+        break;
+      case 7: menuPruebas(); break;
+      case 8:
+        SerialBT.println("🚪 Saliendo del modo Bluetooth...");
+        return;
+      default:
+        SerialBT.println("❌ Opción inválida. Intenta de nuevo.");
+    }
+  }
+}
+void configuracionRapidaDespliegue() {
+  SerialBT.println("\n🚀 Iniciando configuración rápida de despliegue...\n");
+
+  // Cambiar nombre del equipo
+  editarCampoConfig("nombre del equipo", config.nombre_equipo, sizeof(config.nombre_equipo));
+
+  // Sincronizar hora (si SIM800 está activo)
+  sincronizarHoraPorBluetooth();
+
+  // Calibración de sensores
+  calibrarSensoresSuelo();
+
+  // Guardar configuración
+  SerialBT.println("💾 Guardando configuración...");
+  if (guardarConfigEnArchivo()) {
+    SerialBT.println("✅ Configuración guardada exitosamente.");
+  } else {
+    SerialBT.println("❌ Error al guardar la configuración.");
+  }
+
+  // Mensaje final
+  SerialBT.println("✅ Configuración rápida completada y guardada.");
+  SerialBT.println("Ya puedes instalar el equipo 🚀 ¿Deseas reiniciar el sistema ahora? (s/n): ");
+  String respuesta = leerLineaBluetooth();
+  respuesta.toLowerCase();
+
+  if (respuesta == "s" || respuesta == "si") {
+    SerialBT.println("🔄 Reiniciando sistema...");
+    delay(1000);
+    ESP.restart();
+  } else {
+    SerialBT.println("⏹️ Reinicio cancelado. Puedes continuar configurando el sistema.");
+  }
+}
+void manejarDescargaLog() {
+  String path = "/" + String(config.archivo_log);
+  if (!SD.exists(path)) {
+    servidorWeb.send(404, "text/plain", "❌ Archivo no encontrado");
+    return;
+  }
+
+  File archivo = SD.open(path, FILE_READ);
+  if (!archivo) {
+    servidorWeb.send(500, "text/plain", "❌ Error al abrir archivo");
+    return;
+  }
+
+  servidorWeb.sendHeader("Content-Type", "text/csv");
+  servidorWeb.sendHeader("Content-Disposition", "attachment; filename=log.csv");
+  servidorWeb.sendHeader("Connection", "close");
+  servidorWeb.streamFile(archivo, "text/csv");
+  archivo.close();
+}
+void iniciarServidorWeb() {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid_ap, password_ap);
+
+  IPAddress ip = WiFi.softAPIP();
+  debugPrint("📡 Punto de acceso iniciado en IP: " + ip.toString());
+
+  servidorWeb.on("/", HTTP_GET, []() {
+    servidorWeb.send(200, "text/html", R"rawliteral(
+      <!DOCTYPE html><html>
+      <head><meta charset="UTF-8"><title>HydroSense</title></head>
+      <body style="font-family:sans-serif;text-align:center">
+      <h2>📄 Descarga de Log HydroSense</h2>
+      <a href="/log" download><button style="font-size:20px;padding:10px 20px;">Descargar log.csv</button></a>
+      </body></html>
+    )rawliteral");
+  });
+
+  servidorWeb.on("/log", HTTP_GET, manejarDescargaLog);
+
+  servidorWeb.begin();
+  debugPrint("🌐 Servidor iniciado. Conéctate a 'HydroSense-AP'");
+}
+void parpadearAmbosLeds(uint8_t cantidad, bool largo) {
+  const uint16_t onTime = largo ? 1000 : 300;
+  const uint16_t offTime = largo ? 500 : 200;
+
+  for (uint8_t i = 0; i < cantidad; i++) {
+    digitalWrite(LED_VERDE, HIGH);
+    digitalWrite(LED_ROJO, HIGH);
+    delay(onTime);
+    digitalWrite(LED_VERDE, LOW);
+    digitalWrite(LED_ROJO, LOW);
+    delay(offTime);
+  }
+}
+void detectarModoInicio() {
+  pinMode(PIN_BLUETOOTH_ACTIVADOR, INPUT_PULLUP);
+
+  if (digitalRead(PIN_BLUETOOTH_ACTIVADOR) == LOW) {
+    unsigned long t0 = millis();
+    bool mostrado_3s = false;
+    bool mostrado_5s = false;
+
+    while (digitalRead(PIN_BLUETOOTH_ACTIVADOR) == LOW) {
+      unsigned long ahora = millis();
+      unsigned long duracion = ahora - t0;
+
+      if (duracion >= 5000 && !mostrado_3s) {
+        parpadearAmbosLeds(3, false);
+        mostrado_3s = true;
+      }
+
+      if (duracion >= 10000 && !mostrado_5s) {
+        parpadearAmbosLeds(3, false);
+        mostrado_5s = true;
+      }
+
+      delay(50);
+    }
+
+    unsigned long duracion = millis() - t0;
+
+    if (duracion >= 5000) {
+      modoServidorWeb = true;
+    } else if (duracion >= 3000) {
+      modoBluetooth = true;
+    }
+  }
+}
 void probarEnvioSMS() {
   if (!config.usar_sim800) {
     SerialBT.println("⚠️ El SIM800L está desactivado. Actívalo desde el menú de configuración.");
@@ -695,10 +769,9 @@ bool conectarGPRS() {
   return true;
 }
 String fechaActual(const DateTime& dt) {
-  char buffer[64];
-  snprintf(buffer, sizeof(buffer), "%04d/%02d/%02d (%s) %02d:%02d:%02d",
+  char buffer[32];
+  snprintf(buffer, sizeof(buffer), "%04d/%02d/%02d %02d:%02d:%02d",
            dt.year(), dt.month(), dt.day(),
-           daysOfWeek[dt.dayOfTheWeek()],
            dt.hour(), dt.minute(), dt.second());
   return String(buffer);
 }
@@ -1193,8 +1266,8 @@ int calcularPorcentajeHumedad(const int valor, const int seco, const int mojado)
   if (valor < minimoPermitido) return -1;
   if (valor > maximoPermitido) return 101;
 
-  const int porcentaje = map(valor, seco, mojado, 0, 100);
-  return constrain(porcentaje, 0, 100);
+  float porcentaje = 100.0 * (valor - mojado) / (seco - mojado);
+  return constrain(round(porcentaje), 0, 100);
 }
 bool iniciarModbus() {
   debugPrint("🟡 Iniciando protocolo Modbus...");
