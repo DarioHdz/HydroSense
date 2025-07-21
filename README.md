@@ -92,9 +92,11 @@ Este archivo se encuentra en la microSD y permite configurar el sistema sin reco
 
 ```
 # partitions.csv
-nvs,        data, nvs,     0x9000,  0x4000
-otadata,    data, ota,     0xd000,  0x2000
-app0,       app,  factory, 0x10000, 0x300000
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x4000
+otadata,    data, ota,     0xd000,   0x2000
+app0,       app,  ota_0,   0x10000,  0x1E0000
+app1,       app,  ota_1,   0x1F0000, 0x1E0000
 ```
 
 **Dependencias (platformio.ini)**:
@@ -125,7 +127,7 @@ lib_deps =
 
 ## 📍 Estado del proyecto
 
-- ✅ Versión actual: **v2.4**
+- ✅ Versión actual: **v2.6**
 - ✅ Funcional y modular
 - ✅ Pruebas de campo preparadas
 
