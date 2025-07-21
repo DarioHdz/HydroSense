@@ -55,6 +55,7 @@ PIN LIST:
 #include <SHT1x-ESP.h>
 #include <WebServer.h>
 #include <Arduino.h>
+#include <Update.h>
 #include <RTClib.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -114,7 +115,7 @@ const char* password_ap = "hidrosense";
 WebServer servidorWeb(80);
 
 // Variables para control del sistema
-#define FIRMWARE_VERSION "v2.5"
+#define FIRMWARE_VERSION "v2.6"
 enum EstadoSistema {
   ESTADO_OK,
   FALLO_CRITICO,
@@ -170,6 +171,7 @@ void guardarEnSD(const String& linea);
 void configuracionRapidaDespliegue();
 bool sincronizarHoraPorBluetooth();
 void mostrarConfiguracionActual();
+String obtenerNombreLogSemanal();
 void menuCalibracionSensores();
 bool guardarConfigEnArchivo();
 void calibrarSensoresSuelo();
@@ -236,7 +238,6 @@ void setup() {
     menuBluetoothGeneral();
     return;
   }
-
 
   // CONTADOR
   ciclos++;
@@ -428,11 +429,217 @@ bool enviarDatosAPI(const String &lineaCSV) {
   gsmClient.stop();
   return true;
 }
+void iniciarServidorWeb() {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(ssid_ap, password_ap);
+
+  IPAddress ip = WiFi.softAPIP();
+  debugPrint("📡 Punto de acceso iniciado en IP: " + ip.toString());
+
+  servidorWeb.on("/", HTTP_GET, []() {
+    File root = SD.open("/");
+    String html = R"rawliteral(
+      <!DOCTYPE html><html>
+      <head>
+        <meta charset='UTF-8'><title>HydroSense</title>
+        <script>
+          function eliminarArchivo(nombre) {
+            if (confirm("¿Seguro que deseas eliminar " + nombre + "?")) {
+              fetch('/delete?f=' + nombre)
+                .then(res => res.text())
+                .then(msg => alert(msg))
+                .then(() => location.reload());
+            }
+          }
+        </script>
+      </head>
+      <body style='font-family:sans-serif;text-align:center'>
+        <p>
+          <a href="/update">
+            <button style="font-size:16px;padding:10px 20px;background-color:#007bff;color:white;border:none;border-radius:5px;">
+              🔄 Actualizar Firmware OTA
+            </button>
+          </a>
+        </p>
+        <h2>📁 Archivos CSV disponibles</h2>
+        <ul style='list-style:none;padding:0'>
+    )rawliteral";
+
+    while (true) {
+      File entry = root.openNextFile();
+      if (!entry) break;
+
+      String nombre = entry.name();
+      if (nombre.endsWith(".csv")) {
+        html += "<li style='margin:10px'>";
+        html += "<form action='/log' method='get' style='display:inline'>";
+        html += "<input type='hidden' name='f' value='" + nombre + "'>";
+        html += "<button type='submit' style='font-size:16px;padding:6px 16px;'>📥 Descargar</button>";
+        html += "</form> ";
+        html += "<span style='font-size:16px;margin:0 10px'>" + nombre + "</span>";
+        html += "<button style='font-size:16px;padding:6px 16px;color:red' onclick='eliminarArchivo(\"" + nombre + "\")'>❌ Eliminar</button>";
+        html += "</li>";
+      }
+      entry.close();
+    }
+
+    servidorWeb.send(200, "text/html", html);
+  });
+
+  // Descarga de archivo
+  servidorWeb.on("/log", HTTP_GET, []() {
+    if (!servidorWeb.hasArg("f")) {
+      servidorWeb.send(400, "text/plain", "❌ Parámetro de archivo no especificado");
+      return;
+    }
+
+    String archivo = servidorWeb.arg("f");
+    String path = "/" + archivo;
+
+    if (!SD.exists(path)) {
+      servidorWeb.send(404, "text/plain", "❌ Archivo no encontrado");
+      return;
+    }
+
+    File f = SD.open(path, FILE_READ);
+    if (!f) {
+      servidorWeb.send(500, "text/plain", "❌ Error al abrir el archivo");
+      return;
+    }
+
+    servidorWeb.sendHeader("Content-Type", "text/csv");
+    servidorWeb.sendHeader("Content-Disposition", "attachment; filename=" + archivo);
+    servidorWeb.sendHeader("Connection", "close");
+    servidorWeb.streamFile(f, "text/csv");
+    f.close();
+  });
+
+  // Eliminación de archivo
+  servidorWeb.on("/delete", HTTP_GET, []() {
+    if (!servidorWeb.hasArg("f")) {
+      servidorWeb.send(400, "text/plain", "❌ Parámetro de archivo no especificado");
+      return;
+    }
+
+    String archivo = servidorWeb.arg("f");
+    String path = "/" + archivo;
+
+    if (!SD.exists(path)) {
+      servidorWeb.send(404, "text/plain", "❌ Archivo no encontrado");
+      return;
+    }
+
+    if (SD.remove(path)) {
+      servidorWeb.send(200, "text/plain", "✅ Archivo eliminado: " + archivo);
+    } else {
+      servidorWeb.send(500, "text/plain", "❌ Error al eliminar el archivo");
+    }
+  });
+
+  // Página de actualización OTA
+  servidorWeb.on("/update", HTTP_GET, []() {
+    servidorWeb.send(200, "text/html", R"rawliteral(
+    <!DOCTYPE html><html>
+    <head><meta charset='UTF-8'><title>HydroSense OTA</title></head>
+    <body style='font-family:sans-serif;text-align:center'>
+      <h2>🚀 Actualización de Firmware OTA</h2>
+      <form method='POST' action='/update' enctype='multipart/form-data'>
+        <input type='file' name='firmware' accept='.bin' required><br><br>
+        <input type='submit' value='Actualizar'>
+      </form>
+      <p>⚠️ No apagues ni reinicies el dispositivo durante la actualización.</p>
+    </body>
+    </html>
+  )rawliteral");
+  });
+
+  // POST del archivo binario (manejo OTA)
+  servidorWeb.on("/update", HTTP_POST, []() {
+    bool exito = !Update.hasError();
+    servidorWeb.send(200, "text/plain",
+      exito ? "[OK] Actualizacion exitosa. Reiniciando..." :
+              "[FAIL] Fallo la actualizacion.");
+    delay(1500);
+    if (exito) ESP.restart();
+  }, []() {
+    HTTPUpload& upload = servidorWeb.upload();
+
+    if (upload.status == UPLOAD_FILE_START) {
+      debugPrint("⬆️ Iniciando carga OTA: " + upload.filename);
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) {
+        debugPrint("✅ Firmware cargado y listo");
+      } else {
+        Update.printError(Serial);
+      }
+    }
+  });
+
+
+  servidorWeb.begin();
+  debugPrint("🌐 Servidor iniciado. Conéctate a 'HydroSense-AP'");
+}
+
 
 // Terminadas
+String obtenerNombreLogSemanal(const DateTime& dt) {
+  // Lunes = 1, Domingo = 7
+  int diaSemana = dt.dayOfTheWeek();
+  int diasARestar = (diaSemana == 0) ? 6 : diaSemana - 1;
+
+  DateTime inicioSemana = dt - TimeSpan(diasARestar, 0, 0, 0);
+
+  char nombre[32];
+  snprintf(nombre, sizeof(nombre), "log_%04d-%02d-%02d.csv",
+           inicioSemana.year(), inicioSemana.month(), inicioSemana.day());
+  return String(nombre);
+}
+void guardarEnSD(const String& linea) {
+  // Obtener nombre del archivo basado en el lunes de esta semana
+  const DateTime now = rtc.now();
+  const String nombreLog = obtenerNombreLogSemanal(now);
+  strncpy(config.archivo_log, nombreLog.c_str(), sizeof(config.archivo_log)); // solo en RAM
+
+  const String path = "/" + nombreLog;
+  const bool nuevoArchivo = !SD.exists(path);
+
+  logFile = SD.open(path, FILE_APPEND);
+  if (!logFile) {
+    debugPrint("❌ Error al abrir archivo " + nombreLog);
+    actualizarEstado(FALLO_CRITICO);
+    return;
+  }
+
+  // Encabezado solo si es nuevo o estaba vacío
+  if (nuevoArchivo || logFile.size() == 0) {
+    const String encabezado = "Equipo,Fecha y hora,Temp. ambiente [C],Humedad ambiente [%],Humedad S30,Humedad S15,Radiacion [W/m2]";
+    logFile.println(encabezado);
+  }
+
+  // Escribir datos
+  if (!logFile.println(linea)) {
+    debugPrint("❌ Error al escribir en " + nombreLog);
+    actualizarEstado(FALLO_CRITICO);
+  } else {
+    debugPrint("📥 Datos guardados en " + nombreLog);
+  }
+
+  logFile.close();
+}
 void menuBluetoothGeneral() {
+  while (!SerialBT.hasClient()) {
+    debugPrint("⏳ Esperando cliente Bluetooth...");
+    delay(500);
+  }
+
   while (true) {
-    servidorWeb.handleClient();
     SerialBT.println();
     SerialBT.println("📡 === MODO CONFIGURACIÓN BLUETOOTH ===");
     SerialBT.println("0️⃣ Configuración rápida de despliegue 🚀");
@@ -522,40 +729,15 @@ void manejarDescargaLog() {
   servidorWeb.streamFile(archivo, "text/csv");
   archivo.close();
 }
-void iniciarServidorWeb() {
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid_ap, password_ap);
-
-  IPAddress ip = WiFi.softAPIP();
-  debugPrint("📡 Punto de acceso iniciado en IP: " + ip.toString());
-
-  servidorWeb.on("/", HTTP_GET, []() {
-    servidorWeb.send(200, "text/html", R"rawliteral(
-      <!DOCTYPE html><html>
-      <head><meta charset="UTF-8"><title>HydroSense</title></head>
-      <body style="font-family:sans-serif;text-align:center">
-      <h2>📄 Descarga de Log HydroSense</h2>
-      <a href="/log" download><button style="font-size:20px;padding:10px 20px;">Descargar log.csv</button></a>
-      </body></html>
-    )rawliteral");
-  });
-
-  servidorWeb.on("/log", HTTP_GET, manejarDescargaLog);
-
-  servidorWeb.begin();
-  debugPrint("🌐 Servidor iniciado. Conéctate a 'HydroSense-AP'");
-}
-void parpadearAmbosLeds(uint8_t cantidad, bool largo) {
-  const uint16_t onTime = largo ? 1000 : 300;
-  const uint16_t offTime = largo ? 500 : 200;
+void parpadearAmbosLeds(uint8_t cantidad) {
 
   for (uint8_t i = 0; i < cantidad; i++) {
     digitalWrite(LED_VERDE, HIGH);
     digitalWrite(LED_ROJO, HIGH);
-    delay(onTime);
+    delay(500);
     digitalWrite(LED_VERDE, LOW);
     digitalWrite(LED_ROJO, LOW);
-    delay(offTime);
+    delay(200);
   }
 }
 void detectarModoInicio() {
@@ -563,21 +745,21 @@ void detectarModoInicio() {
 
   if (digitalRead(PIN_BLUETOOTH_ACTIVADOR) == LOW) {
     unsigned long t0 = millis();
-    bool mostrado_3s = false;
     bool mostrado_5s = false;
+    bool mostrado_10s = false;
 
     while (digitalRead(PIN_BLUETOOTH_ACTIVADOR) == LOW) {
       unsigned long ahora = millis();
       unsigned long duracion = ahora - t0;
 
-      if (duracion >= 5000 && !mostrado_3s) {
-        parpadearAmbosLeds(3, false);
-        mostrado_3s = true;
+      if (duracion >= 5000 && !mostrado_5s) {
+        parpadearAmbosLeds(3);
+        mostrado_5s = true;
       }
 
-      if (duracion >= 10000 && !mostrado_5s) {
-        parpadearAmbosLeds(3, false);
-        mostrado_5s = true;
+      if (duracion >= 10000 && !mostrado_10s) {
+        parpadearAmbosLeds(3);
+        mostrado_10s = true;
       }
 
       delay(50);
@@ -585,10 +767,14 @@ void detectarModoInicio() {
 
     unsigned long duracion = millis() - t0;
 
-    if (duracion >= 5000) {
+    if (duracion >= 10000) {
+      modoBluetooth = false;
       modoServidorWeb = true;
-    } else if (duracion >= 3000) {
+      //debugPrint("Modo WiFi activo");
+    } else if (duracion >= 5000) {
       modoBluetooth = true;
+      modoServidorWeb = false;
+      //debugPrint("Modo bluetooth activo");
     }
   }
 }
@@ -623,7 +809,7 @@ bool enviarSMS(const String& mensaje) {
   }
 
   for (int intento = 1; intento <= config.reintentos_envio_sms; intento++) {
-    debugPrint("📤 Enviando SMS a (intento " + String(intento) + ")...");
+    debugPrint("📤 Enviando SMS (intento " + String(intento) + ")...");
 
     if (modem.isNetworkConnected() && modem.sendSMS(config.numero_SMS, mensaje)) {
       debugPrint("✅ SMS enviado correctamente.");
@@ -774,31 +960,6 @@ String fechaActual(const DateTime& dt) {
            dt.year(), dt.month(), dt.day(),
            dt.hour(), dt.minute(), dt.second());
   return String(buffer);
-}
-void guardarEnSD(const String& linea) {
-  const bool nuevoArchivo = !SD.exists("/" + String(config.archivo_log));
-
-  logFile = SD.open("/" + String(config.archivo_log), FILE_APPEND);
-  if (!logFile) {
-    debugPrint("❌ Error al abrir log.csv");
-    actualizarEstado(FALLO_CRITICO);
-    return;
-  }
-
-  // Si es nuevo archivo o estaba vacio, agregar encabezado
-  if (nuevoArchivo || logFile.size() == 0) {
-    const String encabezado = "Equipo,Fecha y hora,Temp. ambiente [C],Humedad ambiente [%],Humedad S30,Humedad S15,Radiacion [W/m2]";
-    logFile.println(encabezado);
-  }
-
-  if (!logFile.println(linea)) {
-    debugPrint("❌ Error al escribir en log.csv");
-    actualizarEstado(FALLO_CRITICO);
-  } else {
-    debugPrint("📥 Datos guardados en " + String(config.archivo_log));
-  }
-
-  logFile.close();
 }
 bool verificarModbus() {
   uint8_t result = node.readHoldingRegisters(0x0000, 1);
