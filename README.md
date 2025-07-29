@@ -1,6 +1,6 @@
 # 🌱 HydroSense – Sistema de Monitoreo Ambiental con ESP32
 
-**HydroSense** es un sistema embebido autónomo basado en ESP32 diseñado para monitoreo ambiental en campo. Realiza lecturas de temperatura, humedad relativa, humedad del suelo en dos profundidades y radiación solar. Integra almacenamiento local en microSD, envío de datos vía GSM, alertas por SMS y configuración en sitio vía Bluetooth.
+**HydroSense** es un sistema embebido autónomo basado en ESP32 diseñado para monitoreo ambiental en campo. Realiza lecturas de temperatura, humedad relativa, humedad del suelo en dos profundidades y radiación solar. Integra almacenamiento local en microSD, envío de datos vía GSM, alertas por SMS, configuración en sitio vía Bluetooth y actualización remota vía WiFi (OTA).
 
 ---
 
@@ -81,6 +81,19 @@ Este archivo se encuentra en la microSD y permite configurar el sistema sin reco
 - 🔧 Configuración por Bluetooth: calibración, APN, número SMS, nombre de equipo, API
 - 🌙 Deep sleep con intervalo configurable para ahorro de energía
 - ⚠️ Manejo de fallos con indicadores LED y estados diferenciados
+- 🌐 **Actualización OTA por WiFi** desde navegador, sin necesidad de cable ni recompilación
+
+---
+
+## 🌐 Interfaz WiFi en campo
+
+Cuando se mantiene presionado el botón >5 s al encender el dispositivo, este entra en **modo AP local** (`HydroSense-AP`).
+
+Desde el navegador puedes:
+
+- 📥 Descargar archivos `.csv` de la microSD
+- 🗑️ Eliminar archivos innecesarios
+- 🔄 Subir nuevo firmware (`.bin`) desde la ruta `/update`
 
 ---
 
@@ -88,7 +101,7 @@ Este archivo se encuentra en la microSD y permite configurar el sistema sin reco
 
 **Entorno**: [PlatformIO](https://platformio.org/)  
 **Framework**: Arduino  
-**Particiones personalizadas**:
+**Particiones personalizadas (OTA):**
 
 ```
 # partitions.csv
@@ -99,7 +112,7 @@ app0,       app,  ota_0,   0x10000,  0x1E0000
 app1,       app,  ota_1,   0x1F0000, 0x1E0000
 ```
 
-**Dependencias (platformio.ini)**:
+**Dependencias (platformio.ini):**
 
 ```ini
 lib_deps = 
@@ -107,7 +120,6 @@ lib_deps =
   adafruit/RTClib@^2.1.4
   adafruit/Adafruit BusIO@^1.17.2
   vshymanskyy/TinyGSM@^0.12.0
-  arduino-libraries/ArduinoHttpClient@^0.6.1
   adafruit/Adafruit ADS1X15@^2.5.0
   4-20ma/ModbusMaster@^2.0.1
   bblanchon/ArduinoJson@^7.4.2
@@ -128,8 +140,9 @@ lib_deps =
 ## 📍 Estado del proyecto
 
 - ✅ Versión actual: **v2.6**
-- ✅ Funcional y modular
-- ✅ Pruebas de campo preparadas
+- ✅ OTA WiFi funcional
+- ✅ Interfaz web lista para campo
+- ✅ Registro y envío de datos estables
 
 ---
 
