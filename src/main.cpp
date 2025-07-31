@@ -384,12 +384,14 @@ bool enviarDatosAPI(const String &lineaCSV) {
   }
 
   doc["equipo"] = campos[0];
-  doc["fecha"] = campos[1];
-  doc["temperatura"] = campos[2].toFloat();
-  doc["humedad_relativa"] = campos[3];
-  doc["humedad_suelo_s30"] = campos[4];
-  doc["humedad_suelo_s15"] = campos[5];
+  doc["fecha_hora"] = campos[1];
+  doc["temperatura"] = campos[2]; // ya es string
+  doc["humedad"] = campos[3];
+  doc["humedad_s30"] = campos[4];
+  doc["humedad_s15"] = campos[5];
   doc["radiacion"] = campos[6];
+
+
 
   String json;
   serializeJson(doc, json);
@@ -587,7 +589,6 @@ void iniciarServidorWeb() {
   debugPrint("🌐 Servidor iniciado. Conéctate a 'HydroSense-AP'");
 }
 
-
 // Terminadas
 String obtenerNombreLogSemanal(const DateTime& dt) {
   // Lunes = 1, Domingo = 7
@@ -752,12 +753,12 @@ void detectarModoInicio() {
       unsigned long ahora = millis();
       unsigned long duracion = ahora - t0;
 
-      if (duracion >= 5000 && !mostrado_5s) {
+      if (duracion >= 3000 && !mostrado_5s) {
         parpadearAmbosLeds(3);
         mostrado_5s = true;
       }
 
-      if (duracion >= 10000 && !mostrado_10s) {
+      if (duracion >= 6000 && !mostrado_10s) {
         parpadearAmbosLeds(3);
         mostrado_10s = true;
       }
