@@ -1,0 +1,21 @@
+{
+  "nombre_equipo": "HydroSense_0x",
+  "numSerie": "CDHS00x",
+  "sueloS30_min": 9004,
+  "sueloS30_max": 9002,
+  "sueloS15_min": 10434,
+  "sueloS15_max": 10431,
+  "intervalo_minutos": 2,
+  "numero_SMSDatos": "+520000000000",
+  "numero_SMSNotif": "+520000000000",
+  "usar_modbus": true,
+  "usar_sim800": true,
+  "timeout_red": 30000,
+  "usar_leds_estado": true,
+  "archivo_log": "log.csv",
+  "reintentos_envio_sms": 3,
+  "espera_entre_reintentos_sms_ms": 500,
+  "tolerancia_adc": 250,
+  "tempSuelo1_addr": "28:32:B0:87:00:2D:04:A4",
+  "tempSuelo2_addr": "28:DE:62:87:00:03:79:35"
+}
